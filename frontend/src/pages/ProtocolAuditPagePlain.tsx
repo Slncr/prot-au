@@ -307,11 +307,15 @@ export default function ProtocolAuditPagePlain() {
     void loadDoctorRating();
     void loadTimeline(timelinePeriod);
     void loadBackgroundStatus();
+  }, [syncList, loadStats, loadDoctorRating, loadTimeline, timelinePeriod, loadBackgroundStatus]);
+
+  useEffect(() => {
+    if (!backgroundQueue?.running) return;
     const timer = window.setInterval(() => {
       void loadBackgroundStatus();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [syncList, loadStats, loadDoctorRating, loadTimeline, timelinePeriod, loadBackgroundStatus]);
+  }, [backgroundQueue?.running, loadBackgroundStatus]);
 
   const runAnalyze = useCallback(
     async (url: string) => {
