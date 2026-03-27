@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - protocol_auditor_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      EXTERNAL_SHOWALL_URL: ${EXTERNAL_SHOWALL_URL}
+      EXTERNAL_BASE_URL: ${EXTERNAL_BASE_URL}
+      EXTERNAL_BASIC_USERNAME: ${EXTERNAL_BASIC_USERNAME}
+      EXTERNAL_BASIC_PASSWORD: ${EXTERNAL_BASIC_PASSWORD}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      PDF_STORAGE_DIR: /app/data/protocol_pdfs
+    env_file:
+      - ./.env
+    ports:
+      - "${BACKEND_PORT}:8000"
+    volumes:
+      - protocol_auditor_pdf_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      REACT_APP_API_BASE_URL: http://backend:8000/api/v1
+    ports:
+      - "${FRONTEND_PORT}:80"
+    depends_on:
+      - backend
+
+volumes:
+  protocol_auditor_postgres_data:
+  protocol_auditor_pdf_data:
+
