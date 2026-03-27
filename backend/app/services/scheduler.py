@@ -4,11 +4,8 @@ import threading
 import time
 from datetime import datetime
 
-from sqlalchemy.orm import Session
-
 from app.core.config import settings
-from app.db.session import SessionLocal
-from app.services.protocol_service import run_background_analysis
+from app.services.background_queue import background_analysis_queue
 
 
 def _sleep_until_next_check(interval_s: int = 30) -> None:
@@ -57,12 +54,9 @@ class DailyAnalysisScheduler:
             _sleep_until_next_check(interval_s=20)
 
     def _run_once(self) -> None:
-        db: Session = SessionLocal()
         try:
-            run_background_analysis(db, limit=settings.BACKGROUND_ANALYSIS_MAX_PER_RUN)
+            background_analysis_queue.start(limit=None)
         except Exception:
             # Внешний сервер может быть недоступен. Планировщик не должен падать.
             pass
-        finally:
-            db.close()
 

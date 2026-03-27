@@ -43,6 +43,11 @@ type DoctorErrorsStat = {
   total: number;
 };
 
+function getErrorRatePercent(withErrors: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((withErrors / total) * 100);
+}
+
 type DoctorProtocolItem = {
   url: string;
   fileName: string;
@@ -87,6 +92,16 @@ type ErrorsTimelineResponse = {
 type UploadProtocolResponse = {
   url: string;
   analysis: AnalysisResult;
+};
+
+type BackgroundQueueState = {
+  running: boolean;
+  stopRequested: boolean;
+  queued: number;
+  processed: number;
+  failed: number;
+  currentUrl?: string | null;
+  startedAt?: string | null;
 };
 
 const api = axios.create({
@@ -190,6 +205,8 @@ export default function ProtocolAuditPagePlain() {
 
   const [uiError, setUiError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [backgroundQueue, setBackgroundQueue] = useState<BackgroundQueueState | null>(null);
+  const [queueActionLoading, setQueueActionLoading] = useState(false);
 
   const [doctorModalOpen, setDoctorModalOpen] = useState(false);
   const [doctorModalFio, setDoctorModalFio] = useState<string | null>(null);
@@ -261,6 +278,15 @@ export default function ProtocolAuditPagePlain() {
     }
   }, []);
 
+  const loadBackgroundStatus = useCallback(async () => {
+    try {
+      const res = await api.get<BackgroundQueueState>('/protocols/background-status');
+      setBackgroundQueue(res.data);
+    } catch {
+      // ignore temporary status errors
+    }
+  }, []);
+
   const syncList = useCallback(async () => {
     setLoadingList(true);
     setUiError(null);
@@ -280,7 +306,12 @@ export default function ProtocolAuditPagePlain() {
     void loadStats();
     void loadDoctorRating();
     void loadTimeline(timelinePeriod);
-  }, [syncList, loadStats, loadDoctorRating, loadTimeline, timelinePeriod]);
+    void loadBackgroundStatus();
+    const timer = window.setInterval(() => {
+      void loadBackgroundStatus();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [syncList, loadStats, loadDoctorRating, loadTimeline, timelinePeriod, loadBackgroundStatus]);
 
   const runAnalyze = useCallback(
     async (url: string) => {
@@ -380,16 +411,37 @@ export default function ProtocolAuditPagePlain() {
 
   const runBackgroundNow = useCallback(async () => {
     setUiError(null);
+    setQueueActionLoading(true);
     try {
-      await api.post('/protocols/background-run', { limit: 20 });
+      await api.post('/protocols/background-run', { limit: null });
+      await loadBackgroundStatus();
       await syncList();
       await loadStats();
       await loadDoctorRating();
       await loadTimeline(timelinePeriod);
     } catch (e: any) {
       setUiError(e?.response?.data?.detail || 'Ошибка запуска фонового анализа');
+    } finally {
+      setQueueActionLoading(false);
     }
-  }, [loadDoctorRating, loadStats, loadTimeline, syncList, timelinePeriod]);
+  }, [loadBackgroundStatus, loadDoctorRating, loadStats, loadTimeline, syncList, timelinePeriod]);
+
+  const stopBackgroundNow = useCallback(async () => {
+    setUiError(null);
+    setQueueActionLoading(true);
+    try {
+      await api.post('/protocols/background-stop');
+      await loadBackgroundStatus();
+      await syncList();
+      await loadStats();
+      await loadDoctorRating();
+      await loadTimeline(timelinePeriod);
+    } catch (e: any) {
+      setUiError(e?.response?.data?.detail || 'Ошибка остановки фонового анализа');
+    } finally {
+      setQueueActionLoading(false);
+    }
+  }, [loadBackgroundStatus, loadDoctorRating, loadStats, loadTimeline, syncList, timelinePeriod]);
 
   const ratingMaxTotal = useMemo(
     () =>
@@ -445,13 +497,27 @@ export default function ProtocolAuditPagePlain() {
           <button className="btn btn--primary" onClick={() => void syncList()} disabled={loadingList}>
             {loadingList ? 'Обновляю...' : 'Обновить список'}
           </button>
-          <button className="btn btn--secondary" onClick={() => void runBackgroundNow()}>
-            Запустить фоновой анализ
+          <button className="btn btn--secondary" onClick={() => void runBackgroundNow()} disabled={queueActionLoading}>
+            {queueActionLoading ? 'Обработка...' : 'Запустить очередь анализа'}
+          </button>
+          <button
+            className="btn btn--ghost"
+            onClick={() => void stopBackgroundNow()}
+            disabled={!backgroundQueue?.running || queueActionLoading}
+          >
+            Остановить очередь
           </button>
           <button className="btn btn--ghost" onClick={() => void loadStats()} disabled={loadingStats}>
             {loadingStats ? 'Статистика...' : 'Обновить статистику'}
           </button>
         </div>
+      </div>
+
+      <div className="pa-muted">
+        Очередь анализа: {backgroundQueue?.running ? 'работает' : 'остановлена'}
+        {backgroundQueue
+          ? ` · в очереди ${backgroundQueue.queued} · обработано ${backgroundQueue.processed} · ошибок ${backgroundQueue.failed}`
+          : ''}
       </div>
 
       {uiError ? <div className="pa-error">{uiError}</div> : null}
@@ -686,6 +752,7 @@ export default function ProtocolAuditPagePlain() {
                             <th>Врач</th>
                             <th style={{ textAlign: 'right' }}>Ошибок</th>
                             <th style={{ textAlign: 'right' }}>Всего</th>
+                            <th style={{ textAlign: 'right' }}>% ошибок</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -700,6 +767,11 @@ export default function ProtocolAuditPagePlain() {
                                 <span className="chip chip--error">{s.withErrors}</span>
                               </td>
                               <td style={{ textAlign: 'right' }}>{s.total}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                <span className="chip chip--warn">
+                                  {getErrorRatePercent(s.withErrors, s.total)}%
+                                </span>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
