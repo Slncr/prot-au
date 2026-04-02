@@ -197,6 +197,7 @@ export default function ProtocolAuditPagePlain() {
   const [loadingStats, setLoadingStats] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState('');
   const [statsTab, setStatsTab] = useState<'errors' | 'rating' | 'charts'>('errors');
+  const [doctorErrorsPeriod, setDoctorErrorsPeriod] = useState<'day' | 'week' | 'month' | 'year' | 'all'>('all');
   const [doctorRating, setDoctorRating] = useState<DoctorsRatingResponse | null>(null);
   const [loadingRating, setLoadingRating] = useState(false);
   const [timelinePeriod, setTimelinePeriod] = useState<'week' | 'month' | 'all'>('month');
@@ -219,6 +220,39 @@ export default function ProtocolAuditPagePlain() {
     if (!q) return doctorStats;
     return doctorStats.filter((d) => d.doctorFio.toLowerCase().includes(q));
   }, [doctorSearch, doctorStats]);
+
+  const downloadDoctorsErrorsReport = useCallback(
+    async (opts: { format: 'csv' | 'pdf'; doctorFio?: string }) => {
+      setUiError(null);
+      try {
+        const params = new URLSearchParams();
+        params.set('format', opts.format);
+        params.set('period', doctorErrorsPeriod);
+        if (opts.doctorFio) params.set('doctorFio', opts.doctorFio);
+
+        const res = await fetch(`/api/v1/stats/doctors-errors/export?${params.toString()}`, { method: 'GET' });
+        if (!res.ok) throw new Error('Failed to download report');
+        const blob = await res.blob();
+
+        const disposition = res.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="([^"]+)"/i);
+        const filename =
+          match?.[1] ||
+          `doctors_errors_${opts.doctorFio ? 'one' : 'all'}_${doctorErrorsPeriod}.${opts.format}`;
+
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e: any) {
+        setUiError(e?.message || 'Ошибка скачивания отчёта');
+      }
+    },
+    [doctorErrorsPeriod],
+  );
 
   const loadStats = useCallback(async () => {
     setLoadingStats(true);
@@ -745,6 +779,35 @@ export default function ProtocolAuditPagePlain() {
                           value={doctorSearch}
                           onChange={(e) => setDoctorSearch(e.target.value)}
                         />
+                        <select
+                          className="pa-input"
+                          style={{ width: 200 }}
+                          value={doctorErrorsPeriod}
+                          onChange={(e) => setDoctorErrorsPeriod(e.target.value as any)}
+                          title="Период для экспорта"
+                        >
+                          <option value="day">День</option>
+                          <option value="week">Неделя</option>
+                          <option value="month">Месяц</option>
+                          <option value="year">Год</option>
+                          <option value="all">Всё время</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          onClick={() => void downloadDoctorsErrorsReport({ format: 'csv' })}
+                          title="Скачать CSV по всем врачам"
+                        >
+                          CSV (все)
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          onClick={() => void downloadDoctorsErrorsReport({ format: 'pdf' })}
+                          title="Скачать PDF по всем врачам"
+                        >
+                          PDF (все)
+                        </button>
                         <span className="pa-muted">Найдено: {filteredDoctorStats.length}</span>
                       </div>
                     {filteredDoctorStats.length === 0 ? (
@@ -757,6 +820,7 @@ export default function ProtocolAuditPagePlain() {
                             <th style={{ textAlign: 'right' }}>Ошибок</th>
                             <th style={{ textAlign: 'right' }}>Всего</th>
                             <th style={{ textAlign: 'right' }}>% ошибок</th>
+                            <th style={{ textAlign: 'right' }}>Экспорт</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -775,6 +839,23 @@ export default function ProtocolAuditPagePlain() {
                                 <span className="chip chip--warn">
                                   {getErrorRatePercent(s.withErrors, s.total)}%
                                 </span>
+                              </td>
+                              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn--ghost"
+                                  onClick={() => void downloadDoctorsErrorsReport({ format: 'csv', doctorFio: s.doctorFio })}
+                                >
+                                  CSV
+                                </button>
+                                {' '}
+                                <button
+                                  type="button"
+                                  className="btn btn--ghost"
+                                  onClick={() => void downloadDoctorsErrorsReport({ format: 'pdf', doctorFio: s.doctorFio })}
+                                >
+                                  PDF
+                                </button>
                               </td>
                             </tr>
                           ))}

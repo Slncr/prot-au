@@ -13,3 +13,5 @@ pypdf
 httpx
 python-multipart
 
+reportlab
+

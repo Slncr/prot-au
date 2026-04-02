@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import List
+from io import BytesIO
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -20,6 +22,121 @@ from app.schemas.protocol import (
 )
 
 router = APIRouter()
+
+
+def _resolve_period_to_cutoff(period: str) -> Optional[datetime]:
+    now = datetime.now(timezone.utc)
+    if period == "day":
+        return now - timedelta(days=1)
+    if period == "week":
+        return now - timedelta(days=7)
+    if period == "month":
+        return now - timedelta(days=30)
+    if period == "year":
+        return now - timedelta(days=365)
+    if period == "all":
+        return None
+    raise ValueError("period must be one of day|week|month|year|all")
+
+
+@router.get("/stats/doctors-errors/export")
+def doctors_errors_export(
+    format: str = Query("csv", pattern="^(csv|pdf)$"),
+    doctorFio: Optional[str] = Query(None, min_length=1),
+    period: str = Query("all", pattern="^(day|week|month|year|all)$"),
+    limit: int = Query(5000, ge=1, le=50000),
+    db: Session = Depends(get_db),
+):
+    """
+    Экспорт статистики ошибок по врачам (CSV/PDF).
+    - doctorFio: если задан, экспорт только по одному врачу
+    - period: фильтр по analyzed_at (если есть) иначе created_at
+    """
+    cutoff = _resolve_period_to_cutoff(period)
+    base_dt = func.coalesce(Protocol.analyzed_at, Protocol.created_at)
+
+    with_errors = func.sum(case((Protocol.status == ProtocolStatus.ERROR, 1), else_=0)).label("with_errors")
+    total = func.count(Protocol.id).label("total")
+
+    q = (
+        db.query(Protocol.doctor_fio.label("doctor_fio"), with_errors, total)
+        .filter(Protocol.doctor_fio.isnot(None))
+    )
+    if doctorFio:
+        q = q.filter(Protocol.doctor_fio == doctorFio)
+    if cutoff is not None:
+        q = q.filter(base_dt >= cutoff)
+
+    q = q.group_by(Protocol.doctor_fio).order_by(with_errors.desc()).limit(limit)
+    rows = q.all()
+
+    def _row_to_values(r):
+        with_err = int(r.with_errors or 0)
+        tot = int(r.total or 0)
+        rate = (with_err / tot) if tot else 0.0
+        return (r.doctor_fio, with_err, tot, round(rate * 100, 2))
+
+    items = [_row_to_values(r) for r in rows]
+
+    safe_period = period
+    name_part = "all" if not doctorFio else "one"
+    filename = f"doctors_errors_{name_part}_{safe_period}.{format}"
+
+    if format == "csv":
+        import csv
+
+        out = BytesIO()
+        # utf-8-sig for Excel-friendly CSV
+        out.write(b"\xef\xbb\xbf")
+        writer = csv.writer(out)
+        writer.writerow(["doctorFio", "withErrors", "total", "errorRatePercent"])
+        for fio, with_err, tot, rate_pct in items:
+            writer.writerow([fio, with_err, tot, rate_pct])
+        out.seek(0)
+        return StreamingResponse(
+            out,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # pdf
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title="Doctors errors report")
+    styles = getSampleStyleSheet()
+    title = f"Ошибки по врачам · период: {period}" + (f" · врач: {doctorFio}" if doctorFio else "")
+
+    table_data = [["Врач", "Ошибок", "Всего", "% ошибок"]]
+    for fio, with_err, tot, rate_pct in items:
+        table_data.append([fio, str(with_err), str(tot), f"{rate_pct}%"])
+
+    tbl = Table(table_data, repeatRows=1)
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ]
+        )
+    )
+
+    story = [Paragraph(title, styles["Title"]), Spacer(1, 12), tbl]
+    doc.build(story)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/stats/doctors-errors", response_model=List[DoctorErrorsStat])
