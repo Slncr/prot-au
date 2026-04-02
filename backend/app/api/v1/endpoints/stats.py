@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import List, Optional
+from io import StringIO
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -24,6 +27,24 @@ from app.schemas.protocol import (
 router = APIRouter()
 
 
+def _noto_sans_font_paths() -> Tuple[Optional[str], Optional[str]]:
+    """TTF с кириллицей: в образе — /app/fonts; локально положите те же файлы в backend/fonts/."""
+    backend_root = Path(__file__).resolve().parents[4]
+    pairs = [
+        ("/app/fonts/NotoSans-Regular.ttf", "/app/fonts/NotoSans-Bold.ttf"),
+        (
+            str(backend_root / "fonts" / "NotoSans-Regular.ttf"),
+            str(backend_root / "fonts" / "NotoSans-Bold.ttf"),
+        ),
+    ]
+    for regular, bold in pairs:
+        if os.path.isfile(regular) and os.path.isfile(bold):
+            return regular, bold
+        if os.path.isfile(regular):
+            return regular, regular
+    return None, None
+
+
 def _resolve_period_to_cutoff(period: str) -> Optional[datetime]:
     now = datetime.now(timezone.utc)
     if period == "day":
@@ -37,6 +58,17 @@ def _resolve_period_to_cutoff(period: str) -> Optional[datetime]:
     if period == "all":
         return None
     raise ValueError("period must be one of day|week|month|year|all")
+
+
+def _period_label_ru(period: str) -> str:
+    """Человекочитаемый период для отчёта (PDF и т.п.)."""
+    return {
+        "day": "день",
+        "week": "неделя",
+        "month": "месяц",
+        "year": "год",
+        "all": "всё время",
+    }.get(period, period)
 
 
 @router.get("/stats/doctors-errors/export")
@@ -85,13 +117,15 @@ def doctors_errors_export(
     if format == "csv":
         import csv
 
-        out = BytesIO()
-        # utf-8-sig for Excel-friendly CSV
-        out.write(b"\xef\xbb\xbf")
-        writer = csv.writer(out)
+        sio = StringIO()
+        writer = csv.writer(sio)
         writer.writerow(["doctorFio", "withErrors", "total", "errorRatePercent"])
         for fio, with_err, tot, rate_pct in items:
             writer.writerow([fio, with_err, tot, rate_pct])
+
+        # utf-8-sig for Excel-friendly CSV
+        payload = ("\ufeff" + sio.getvalue()).encode("utf-8")
+        out = BytesIO(payload)
         out.seek(0)
         return StreamingResponse(
             out,
@@ -99,16 +133,35 @@ def doctors_errors_export(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    # pdf
+    # Кириллица: только TrueType с поддержкой Unicode (Helvetica/Vera — квадраты).
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    font_name = "Helvetica"
+    font_bold = "Helvetica-Bold"
+    noto_reg, noto_bold = _noto_sans_font_paths()
+    if noto_reg and noto_bold:
+        try:
+            pdfmetrics.registerFont(TTFont("NotoSans", noto_reg))
+            pdfmetrics.registerFont(TTFont("NotoSans-Bold", noto_bold))
+            font_name = "NotoSans"
+            font_bold = "NotoSans-Bold"
+        except Exception:
+            pass
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title="Doctors errors report")
     styles = getSampleStyleSheet()
-    title = f"Ошибки по врачам · период: {period}" + (f" · врач: {doctorFio}" if doctorFio else "")
+    title = f"Ошибки по врачам · период: {_period_label_ru(period)}" + (
+        f" · врач: {doctorFio}" if doctorFio else ""
+    )
+
+    title_style = styles["Title"].clone("TitleRu")
+    title_style.fontName = font_bold
 
     table_data = [["Врач", "Ошибок", "Всего", "% ошибок"]]
     for fio, with_err, tot, rate_pct in items:
@@ -121,7 +174,8 @@ def doctors_errors_export(
                 ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, 0), font_bold),
+                ("FONTNAME", (0, 1), (-1, -1), font_name),
                 ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -129,7 +183,7 @@ def doctors_errors_export(
         )
     )
 
-    story = [Paragraph(title, styles["Title"]), Spacer(1, 12), tbl]
+    story = [Paragraph(title, title_style), Spacer(1, 12), tbl]
     doc.build(story)
     buf.seek(0)
     return StreamingResponse(
