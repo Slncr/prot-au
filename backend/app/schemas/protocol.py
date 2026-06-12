@@ -28,6 +28,7 @@ class AnalysisResult(BaseModel):
     dateOfAdmission: Optional[str] = None
     patientFio: Optional[str] = None
     doctorFio: Optional[str] = None
+    lifeAnamnesis: Optional[str] = None
 
     diagnosisAssessment: Optional[Any] = None
     therapyAssessment: Optional[Any] = None
@@ -47,6 +48,11 @@ class AnalyzeResponse(BaseModel):
 class UploadProtocolResponse(BaseModel):
     url: str
     analysis: AnalysisResult
+
+
+class UpdateProtocolStatusRequest(BaseModel):
+    url: str
+    status: str
 
 
 class DoctorErrorsStat(BaseModel):

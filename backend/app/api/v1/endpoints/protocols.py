@@ -9,13 +9,20 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.protocol import Protocol
-from app.schemas.protocol import AnalyzeRequest, AnalyzeResponse, ProtocolListItem, UploadProtocolResponse
+from app.models.protocol import Protocol, ProtocolStatus
+from app.schemas.protocol import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    ProtocolListItem,
+    UpdateProtocolStatusRequest,
+    UploadProtocolResponse,
+)
 from app.services.protocol_service import (
     analyze_protocol,
     create_uploaded_protocol,
     get_protocol_pdf_path,
     sync_protocols_list,
+    update_protocol_status,
 )
 
 router = APIRouter()
@@ -123,3 +130,32 @@ async def upload_protocol(
         raise HTTPException(status_code=502, detail=f"Upload analysis failed (request_id={request_id}): {e}")
 
     return UploadProtocolResponse(url=proto.external_url, analysis=analysis)
+
+
+@router.post("/protocols/update-status")
+def protocols_update_status(
+    body: UpdateProtocolStatusRequest,
+    db: Session = Depends(get_db),
+):
+    if not body.url:
+        raise HTTPException(status_code=400, detail="url is required")
+    try:
+        try:
+            status = ProtocolStatus(body.status)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported status: {body.status}",
+            )
+        proto = update_protocol_status(db, body.url, status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update protocol status (url=%s)", body.url)
+        raise HTTPException(status_code=500, detail=f"Failed to update status: {e}")
+
+    return {
+        "url": proto.external_url,
+        "status": proto.status.value,
+        "analyzedAt": proto.analyzed_at.isoformat() if proto.analyzed_at else None,
+    }

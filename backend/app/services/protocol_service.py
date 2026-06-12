@@ -272,3 +272,16 @@ def run_background_analysis(db: Session, *, limit: int = 10) -> int:
 
     return ran
 
+
+def update_protocol_status(db: Session, external_url: str, status: ProtocolStatus) -> Protocol:
+    proto = db.query(Protocol).filter(Protocol.external_url == external_url).first()
+    if proto is None:
+        raise ValueError(f"Protocol not found for url={external_url}")
+    proto.status = status
+    if status in (ProtocolStatus.OK, ProtocolStatus.ERROR) and proto.analyzed_at is None:
+        proto.analyzed_at = datetime.utcnow()
+    db.add(proto)
+    db.commit()
+    db.refresh(proto)
+    return proto
+

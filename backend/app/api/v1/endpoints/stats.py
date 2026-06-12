@@ -23,6 +23,7 @@ from app.schemas.protocol import (
     ErrorsTimelineItem,
     ErrorsTimelineResponse,
 )
+from openpyxl import Workbook
 
 router = APIRouter()
 
@@ -73,7 +74,7 @@ def _period_label_ru(period: str) -> str:
 
 @router.get("/stats/doctors-errors/export")
 def doctors_errors_export(
-    format: str = Query("csv", pattern="^(csv|pdf)$"),
+    format: str = Query("csv", pattern="^(csv|pdf|xlsx)$"),
     doctorFio: Optional[str] = Query(None, min_length=1),
     period: str = Query("all", pattern="^(day|week|month|year|all)$"),
     limit: int = Query(5000, ge=1, le=50000),
@@ -130,6 +131,22 @@ def doctors_errors_export(
         return StreamingResponse(
             out,
             media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    if format == "xlsx":
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Doctors errors"
+        ws.append(["Врач", "Ошибок", "Всего", "% ошибок"])
+        for fio, with_err, tot, rate_pct in items:
+            ws.append([fio, with_err, tot, rate_pct])
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

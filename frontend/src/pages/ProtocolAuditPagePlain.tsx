@@ -15,6 +15,7 @@ type AnalysisResult = {
   dateOfAdmission?: string;
   patientFio?: string;
   doctorFio?: string;
+  lifeAnamnesis?: string;
   diagnosisAssessment?: DiagnosisOrTherapyAssessment;
   therapyAssessment?: DiagnosisOrTherapyAssessment;
   recommendations?: string;
@@ -222,7 +223,7 @@ export default function ProtocolAuditPagePlain() {
   }, [doctorSearch, doctorStats]);
 
   const downloadDoctorsErrorsReport = useCallback(
-    async (opts: { format: 'csv' | 'pdf'; doctorFio?: string }) => {
+    async (opts: { format: 'csv' | 'pdf' | 'xlsx'; doctorFio?: string }) => {
       setUiError(null);
       try {
         const params = new URLSearchParams();
@@ -624,7 +625,56 @@ export default function ProtocolAuditPagePlain() {
                       <span className="pa-protocol-line-value">{p.patientFio || '—'}</span>
                     </span>
                   </span>
-                  <span className={p.status === 'OK' ? 'chip chip--ok' : p.status === 'ERROR' ? 'chip chip--error' : 'chip chip--default'}>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className={p.status === 'OK' ? 'chip chip--ok' : p.status === 'ERROR' ? 'chip chip--error' : 'chip chip--default'}
+                    title="Клик: сменить статус"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const nextStatus =
+                        p.status === 'NEW' ? 'OK' : p.status === 'OK' ? 'ERROR' : 'NEW';
+                      void (async () => {
+                        try {
+                          await api.post('/protocols/update-status', {
+                            url: p.url,
+                            status: nextStatus,
+                          });
+                          setProtocols((prev) =>
+                            prev.map((it) =>
+                              it.url === p.url ? { ...it, status: nextStatus } : it,
+                            ),
+                          );
+                          await loadStats();
+                        } catch (e: any) {
+                          setUiError(e?.response?.data?.detail || 'Не удалось обновить статус протокола');
+                        }
+                      })();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const nextStatus =
+                        p.status === 'NEW' ? 'OK' : p.status === 'OK' ? 'ERROR' : 'NEW';
+                      void (async () => {
+                        try {
+                          await api.post('/protocols/update-status', {
+                            url: p.url,
+                            status: nextStatus,
+                          });
+                          setProtocols((prev) =>
+                            prev.map((it) =>
+                              it.url === p.url ? { ...it, status: nextStatus } : it,
+                            ),
+                          );
+                          await loadStats();
+                        } catch (err: any) {
+                          setUiError(err?.response?.data?.detail || 'Не удалось обновить статус протокола');
+                        }
+                      })();
+                    }}
+                  >
                     {p.status}
                   </span>
                 </button>
@@ -722,6 +772,11 @@ export default function ProtocolAuditPagePlain() {
 
                     <div className="pa-divider" />
 
+                    <div className="pa-section-title">Анамнез жизни</div>
+                    <pre className="pa-pre">{analysis.lifeAnamnesis || '—'}</pre>
+
+                    <div className="pa-divider" />
+
                     <div className="pa-section-title">Оценка диагноза</div>
                     <div className="pa-assessment">{formatAssessment(analysis.diagnosisAssessment)}</div>
 
@@ -808,6 +863,14 @@ export default function ProtocolAuditPagePlain() {
                         >
                           PDF (все)
                         </button>
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          onClick={() => void downloadDoctorsErrorsReport({ format: 'xlsx' })}
+                          title="Скачать Excel по всем врачам"
+                        >
+                          Excel (все)
+                        </button>
                         <span className="pa-muted">Найдено: {filteredDoctorStats.length}</span>
                       </div>
                     {filteredDoctorStats.length === 0 ? (
@@ -856,6 +919,14 @@ export default function ProtocolAuditPagePlain() {
                                 >
                                   PDF
                                 </button>
+                                  {' '}
+                                  <button
+                                    type="button"
+                                    className="btn btn--ghost"
+                                    onClick={() => void downloadDoctorsErrorsReport({ format: 'xlsx', doctorFio: s.doctorFio })}
+                                  >
+                                    Excel
+                                  </button>
                               </td>
                             </tr>
                           ))}
